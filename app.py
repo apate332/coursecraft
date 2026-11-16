@@ -10,6 +10,7 @@ from document.extractor import extract_docx
 from quiz.normalizer import normalize_quiz
 from qti.package import create_qti_package
 from qti.validator import validate_qti_package
+from ui.math_renderer import render_question_preview
 
 PROMPT_PATH = "prompts/quiz_converter.txt"
 
@@ -506,6 +507,21 @@ elif st.session_state.workspace == "Review":
                 unsafe_allow_html=True,
             )
 
+            st.markdown(
+                "#### Student preview"
+            )
+
+            with st.container(
+                border=True
+            ):
+                render_question_preview(
+                    question
+                )
+
+            st.markdown(
+                "#### Edit question"
+            )
+            
             question["prompt"] = st.text_area(
                 "Question text",
                 value=question.get("prompt", ""),

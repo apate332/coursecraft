@@ -41,3 +41,14 @@ test_new_quiz.py
 test_new_quiz_qti.py
 test_pipeline.py
 test_qti_validator.pyapp_before_pastel_redesign.py
+document/extractor_before_math.py
+equation_test.docx
+document/math_converter_basic.py
+prompts/quiz_converter_before_math.txt
+advanced_math_test.docx
+structured_math_test.docx
+create_advanced_math_test.py
+create_structured_math_test.py
+create_stem_quiz_test.py
+coursecraft_stem_quiz_test.docx
+stem_ai_result.json
