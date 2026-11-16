@@ -1,126 +1,282 @@
+import hashlib
+import html
 import os
 import tempfile
 import uuid
 import zipfile
+from datetime import date
 
+from quiz.normalizer import normalize_quiz
 from qti.generator import generate_assessment_xml
 from qti.assessment_meta import generate_assessment_meta_xml
 
 
+# =========================================================
+# HELPERS
+# =========================================================
+
+def xml_escape(value):
+    if value is None:
+        return ""
+
+    return html.escape(
+        str(value),
+        quote=True,
+    )
+
+
+def random_ident():
+    """
+    Generate a Canvas-style identifier.
+    """
+
+    return "g" + uuid.uuid4().hex
+
+
+def hash_ident(value):
+    """
+    Generate a stable identifier from another identifier.
+    """
+
+    digest = hashlib.md5(
+        str(value).encode("utf-8")
+    ).hexdigest()
+
+    return "g" + digest
+
+
+# =========================================================
+# IMS COMMON CARTRIDGE MANIFEST
+# =========================================================
+
 def generate_manifest_xml(
-    assessment_id,
-    metadata_id,
+    quiz_ident,
+    meta_ident,
+    package_title,
 ):
+    """
+    Build the IMS Common Cartridge manifest used by
+    Canvas-style New Quiz QTI packages.
+    """
+
+    today = date.today().isoformat()
+
     return f"""<?xml version="1.0" encoding="UTF-8"?>
-
 <manifest
-    identifier="coursecraft_manifest"
-    xmlns="http://www.imsglobal.org/xsd/imscp_v1p1"
-    xmlns:imsqti="http://www.imsglobal.org/xsd/ims_qtiasiv1p2">
+    identifier="{random_ident()}"
+    xmlns="http://www.imsglobal.org/xsd/imsccv1p1/imscp_v1p1"
+    xmlns:lom="http://ltsc.ieee.org/xsd/imsccv1p1/LOM/resource"
+    xmlns:imsmd="http://www.imsglobal.org/xsd/imsmd_v1p2"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="
+        http://www.imsglobal.org/xsd/imsccv1p1/imscp_v1p1
+        http://www.imsglobal.org/xsd/imscp_v1p1.xsd
+        http://ltsc.ieee.org/xsd/imsccv1p1/LOM/resource
+        http://www.imsglobal.org/profile/cc/ccv1p1/LOM/ccv1p1_lomresource_v1p0.xsd
+        http://www.imsglobal.org/xsd/imsmd_v1p2
+        http://www.imsglobal.org/xsd/imsmd_v1p2p2.xsd">
 
-    <organizations/>
+  <metadata>
 
-    <resources>
+    <schema>IMS Content</schema>
 
-        <resource
-            identifier="{assessment_id}_resource"
-            type="imsqti_xmlv1p2"
-            href="{assessment_id}/{assessment_id}.xml">
+    <schemaversion>1.1.3</schemaversion>
 
-            <file
-                href="{assessment_id}/{assessment_id}.xml"/>
+    <imsmd:lom>
 
-            <dependency
-                identifierref="{metadata_id}"/>
+      <imsmd:general>
 
-        </resource>
+        <imsmd:title>
 
+          <imsmd:string>{xml_escape(package_title)}</imsmd:string>
 
-        <resource
-            identifier="{metadata_id}"
-            type="associatedcontent/imscc_xmlv1p1/learning-application-resource"
-            href="{assessment_id}/assessment_meta.xml">
+        </imsmd:title>
 
-            <file
-                href="{assessment_id}/assessment_meta.xml"/>
+      </imsmd:general>
 
-        </resource>
+      <imsmd:lifeCycle>
 
-    </resources>
+        <imsmd:contribute>
+
+          <imsmd:date>
+
+            <imsmd:dateTime>{today}</imsmd:dateTime>
+
+          </imsmd:date>
+
+        </imsmd:contribute>
+
+      </imsmd:lifeCycle>
+
+    </imsmd:lom>
+
+  </metadata>
+
+  <organizations/>
+
+  <resources>
+
+    <resource
+        identifier="{quiz_ident}"
+        type="imsqti_xmlv1p2">
+
+      <file
+          href="{quiz_ident}/{quiz_ident}.xml"/>
+
+      <dependency
+          identifierref="{meta_ident}"/>
+
+    </resource>
+
+    <resource
+        identifier="{meta_ident}"
+        type="associatedcontent/imscc_xmlv1p1/learning-application-resource"
+        href="{quiz_ident}/assessment_meta.xml">
+
+      <file
+          href="{quiz_ident}/assessment_meta.xml"/>
+
+    </resource>
+
+  </resources>
 
 </manifest>
 """
 
 
+# =========================================================
+# PACKAGE BUILDER
+# =========================================================
+
 def create_qti_package(
     quiz_data,
     output_path,
+    settings=None,
 ):
+    """
+    Build a Canvas-style QTI package for New Quizzes.
+
+    Structure:
+
+        imsmanifest.xml
+
+        <quiz_ident>/
+            <quiz_ident>.xml
+            assessment_meta.xml
+
+        non_cc_assessments/
+
+    The quiz is normalized before export so obvious
+    AI structural inconsistencies are corrected before
+    Canvas serialization.
+    """
 
     # -----------------------------------------------------
-    # UNIQUE IDS
+    # NORMALIZE QUIZ
     # -----------------------------------------------------
 
-    unique_id = uuid.uuid4().hex
-
-    assessment_id = (
-        f"assessment_{unique_id}"
+    quiz_data = normalize_quiz(
+        quiz_data
     )
 
-    metadata_id = (
-        f"{assessment_id}_meta"
+    # -----------------------------------------------------
+    # IDENTIFIERS
+    # -----------------------------------------------------
+
+    quiz_ident = random_ident()
+
+    meta_ident = hash_ident(
+        f"{quiz_ident}:meta"
     )
 
+    # -----------------------------------------------------
+    # SETTINGS
+    # -----------------------------------------------------
+
+    final_settings = {
+        "description": "",
+        "shuffle_questions": False,
+        "shuffle_answers": False,
+        "show_correct_answers": False,
+        "allowed_attempts": 1,
+        "one_question_at_a_time": False,
+        "cant_go_back": False,
+        "calculator": "none",
+    }
+
+    if settings:
+        final_settings.update(
+            settings
+        )
 
     # -----------------------------------------------------
     # GENERATE XML
     # -----------------------------------------------------
 
-    assessment_xml = (
-        generate_assessment_xml(
-            quiz_data
-        )
+    assessment_xml = generate_assessment_xml(
+        quiz_data,
+        quiz_ident=quiz_ident,
+        settings=final_settings,
     )
 
     assessment_meta_xml = (
         generate_assessment_meta_xml(
             quiz_data,
-            assessment_id,
+            quiz_ident,
+            settings=final_settings,
         )
     )
 
-    manifest_xml = (
-        generate_manifest_xml(
-            assessment_id,
-            metadata_id,
-        )
+    manifest_xml = generate_manifest_xml(
+        quiz_ident,
+        meta_ident,
+        quiz_data.get(
+            "title",
+            "CourseCraft Quiz",
+        ),
     )
-
 
     # -----------------------------------------------------
-    # TEMPORARY PACKAGE DIRECTORY
+    # BUILD TEMPORARY PACKAGE
     # -----------------------------------------------------
 
     with tempfile.TemporaryDirectory() as temp_dir:
 
-        assessment_dir = os.path.join(
+        # -------------------------------------------------
+        # QUIZ DIRECTORY
+        # -------------------------------------------------
+
+        quiz_dir = os.path.join(
             temp_dir,
-            assessment_id,
+            quiz_ident,
         )
 
         os.makedirs(
-            assessment_dir,
+            quiz_dir,
             exist_ok=True,
         )
 
+        # -------------------------------------------------
+        # NON-CC ASSESSMENTS DIRECTORY
+        # -------------------------------------------------
+
+        non_cc_dir = os.path.join(
+            temp_dir,
+            "non_cc_assessments",
+        )
+
+        os.makedirs(
+            non_cc_dir,
+            exist_ok=True,
+        )
 
         # -------------------------------------------------
         # ASSESSMENT XML
         # -------------------------------------------------
 
         assessment_path = os.path.join(
-            assessment_dir,
-            f"{assessment_id}.xml",
+            quiz_dir,
+            f"{quiz_ident}.xml",
         )
 
         with open(
@@ -133,18 +289,17 @@ def create_qti_package(
                 assessment_xml
             )
 
-
         # -------------------------------------------------
-        # ASSESSMENT METADATA
+        # ASSESSMENT META
         # -------------------------------------------------
 
-        metadata_path = os.path.join(
-            assessment_dir,
+        meta_path = os.path.join(
+            quiz_dir,
             "assessment_meta.xml",
         )
 
         with open(
-            metadata_path,
+            meta_path,
             "w",
             encoding="utf-8",
         ) as file:
@@ -152,7 +307,6 @@ def create_qti_package(
             file.write(
                 assessment_meta_xml
             )
-
 
         # -------------------------------------------------
         # MANIFEST
@@ -173,9 +327,8 @@ def create_qti_package(
                 manifest_xml
             )
 
-
         # -------------------------------------------------
-        # CREATE ZIP
+        # ZIP
         # -------------------------------------------------
 
         with zipfile.ZipFile(
@@ -192,15 +345,33 @@ def create_qti_package(
             package.write(
                 assessment_path,
                 (
-                    f"{assessment_id}/"
-                    f"{assessment_id}.xml"
+                    f"{quiz_ident}/"
+                    f"{quiz_ident}.xml"
                 ),
             )
 
             package.write(
-                metadata_path,
+                meta_path,
                 (
-                    f"{assessment_id}/"
+                    f"{quiz_ident}/"
                     "assessment_meta.xml"
                 ),
             )
+
+            # Explicitly create the empty folder.
+            package.writestr(
+                "non_cc_assessments/",
+                "",
+            )
+
+    return {
+        "output_path": output_path,
+        "quiz_ident": quiz_ident,
+        "meta_ident": meta_ident,
+        "questions": len(
+            quiz_data.get(
+                "questions",
+                [],
+            )
+        ),
+    }

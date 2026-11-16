@@ -1,7 +1,7 @@
 # Secrets
 .env
 
-# Python environment
+# Python
 .venv/
 __pycache__/
 *.pyc
@@ -9,30 +9,35 @@ __pycache__/
 # macOS
 .DS_Store
 
-# Generated QTI / Canvas packages
+# Generated packages
 *.zip
 
-# Generated quiz data
+# Local test data
 ast111_quiz_data.json
 generated_assessment.xml
+generated_assessment_meta.xml
+
+# Local Canvas references / debugging
+reference_qti/
+qti_debug/
+
+# Old experiments
+canvas/
+new_quiz_xml_test/
+numeric_xml_test/
 
 # Backups
 app_before_dashboard_redesign.py
+qti/generator_before_canvas_port.py
+qti/assessment_meta_before_canvas_port.py
+qti/package_before_canvas_port.py
+qti/validator_before_canvas_port.py
 
-# Experimental Canvas API work
-canvas/
-test_canvas_connection.py
-
-# Development / debugging scripts
+# Development test scripts
 compare_qti_reference.py
+test_canvas_connection.py
 test_coursecraft_new_qti.py
 test_new_quiz.py
 test_new_quiz_qti.py
 test_pipeline.py
 test_qti_validator.py
-
-# QTI experiments / reference material
-qti_debug/
-reference_qti/
-new_quiz_xml_test/
-numeric_xml_test/

@@ -7,7 +7,9 @@ import streamlit as st
 from ai.client import ask_asu_ai
 from document.extractor import extract_docx
 from document.chunker import chunk_document
+from quiz.normalizer import normalize_quiz
 from qti.package import create_qti_package
+from qti.validator import validate_qti_package
 
 
 PROMPT_PATH = "prompts/quiz_converter.txt"
@@ -1333,6 +1335,29 @@ elif st.session_state.workspace == "Export":
                         output_file,
                     )
 
+                    # Validate the completed Canvas package
+                    # before allowing it to be downloaded.
+                    results, errors, warnings = validate_qti_package(
+                        output_file,
+                        expected_questions=len(
+                            quiz["questions"]
+                        ),
+                    )
+
+                    if errors:
+                        raise ValueError(
+                            "Canvas package validation failed:\n"
+                            + "\n".join(errors)
+                        )
+
+                    st.session_state[
+                        "qti_validation_results"
+                    ] = results
+
+                    st.session_state[
+                        "qti_validation_warnings"
+                    ] = warnings
+
                     with open(
                         output_file,
                         "rb",
@@ -1354,7 +1379,7 @@ elif st.session_state.workspace == "Export":
                         )
 
                 st.success(
-                    "Canvas package created."
+                    "Canvas package created and validated successfully."
                 )
 
             except Exception as error:

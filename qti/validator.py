@@ -1,408 +1,961 @@
 import os
-import zipfile
 import tempfile
+import zipfile
 import xml.etree.ElementTree as ET
 
 
-QTI_NS = {
-    "qti": "http://www.imsglobal.org/xsd/ims_qtiasiv1p2",
-}
+# =========================================================
+# NAMESPACES
+# =========================================================
 
 MANIFEST_NS = {
-    "ims": "http://www.imsglobal.org/xsd/imscp_v1p1",
+    "cc": (
+        "http://www.imsglobal.org/"
+        "xsd/imsccv1p1/imscp_v1p1"
+    )
+}
+
+QTI_NS = {
+    "qti": (
+        "http://www.imsglobal.org/"
+        "xsd/ims_qtiasiv1p2"
+    )
+}
+
+CANVAS_NS = {
+    "canvas": (
+        "http://canvas.instructure.com/"
+        "xsd/cccv1p0"
+    )
 }
 
 
-def validate_qti_package(zip_path, expected_questions=None):
-    """
-    Validate the basic structure of a CourseCraft QTI package.
+# =========================================================
+# HELPERS
+# =========================================================
 
-    This does NOT guarantee Canvas will accept the package.
-    It catches structural problems before Canvas testing.
+def metadata_value(item, field_name):
+    """
+    Read a Canvas QTI metadata field from an item.
+    """
+
+    fields = item.findall(
+        ".//qti:qtimetadatafield",
+        QTI_NS,
+    )
+
+    for field in fields:
+
+        label = field.find(
+            "qti:fieldlabel",
+            QTI_NS,
+        )
+
+        entry = field.find(
+            "qti:fieldentry",
+            QTI_NS,
+        )
+
+        if (
+            label is not None
+            and label.text == field_name
+        ):
+            if entry is None:
+                return None
+
+            return entry.text
+
+    return None
+
+
+def numeric_text(element):
+    if element is None:
+        return None
+
+    if element.text is None:
+        return None
+
+    try:
+        return float(
+            element.text.strip()
+        )
+    except ValueError:
+        return None
+
+
+# =========================================================
+# MAIN VALIDATOR
+# =========================================================
+
+def validate_qti_package(
+    zip_path,
+    expected_questions=None,
+):
+    """
+    Validate CourseCraft's Canvas New Quiz package.
+
+    This validates:
+
+    - ZIP integrity
+    - IMS Common Cartridge manifest
+    - Canvas assessment metadata
+    - assessment XML
+    - question metadata
+    - choice cardinality
+    - numeric response structure
+    - numeric tolerance/range
+    - manifest dependencies
+    - package paths
+
+    Passing this validator does not guarantee that
+    Canvas will import the package, but it catches
+    the major structural problems locally.
     """
 
     results = []
     errors = []
+    warnings = []
 
-    # -----------------------------------------------------
+    # =====================================================
     # ZIP
-    # -----------------------------------------------------
+    # =====================================================
 
     if not os.path.exists(zip_path):
-        raise FileNotFoundError(
-            f"Package not found: {zip_path}"
+        errors.append(
+            f"Package does not exist: {zip_path}"
         )
+
+        return results, errors, warnings
 
     if not zipfile.is_zipfile(zip_path):
-        raise ValueError(
-            f"Not a valid ZIP file: {zip_path}"
+        errors.append(
+            "File is not a valid ZIP archive."
         )
 
-    results.append("✓ Valid ZIP file")
+        return results, errors, warnings
 
-    # -----------------------------------------------------
-    # EXTRACT
-    # -----------------------------------------------------
+    results.append(
+        "Valid ZIP archive"
+    )
 
-    with tempfile.TemporaryDirectory() as temp_dir:
+    with zipfile.ZipFile(
+        zip_path,
+        "r",
+    ) as package:
 
-        with zipfile.ZipFile(zip_path, "r") as package:
-            package.extractall(temp_dir)
+        bad_file = package.testzip()
 
-            zip_files = package.namelist()
+        if bad_file is not None:
+            errors.append(
+                f"Corrupt ZIP entry: {bad_file}"
+            )
 
-        # -------------------------------------------------
-        # MANIFEST
-        # -------------------------------------------------
+            return results, errors, warnings
 
-        manifest_path = os.path.join(
-            temp_dir,
-            "imsmanifest.xml",
+        results.append(
+            "ZIP integrity passed"
         )
 
-        if not os.path.exists(manifest_path):
-            errors.append("Missing imsmanifest.xml")
+        names = package.namelist()
+
+        # =================================================
+        # REQUIRED PACKAGE CONTENT
+        # =================================================
+
+        if "imsmanifest.xml" not in names:
+            errors.append(
+                "imsmanifest.xml is missing."
+            )
+
+            return results, errors, warnings
+
+        results.append(
+            "imsmanifest.xml found"
+        )
+
+        if (
+            "non_cc_assessments/"
+            not in names
+        ):
+            warnings.append(
+                "non_cc_assessments/ folder "
+                "is not present."
+            )
         else:
-            results.append("✓ imsmanifest.xml found")
+            results.append(
+                "non_cc_assessments/ found"
+            )
 
         assessment_files = [
             name
-            for name in zip_files
+            for name in names
             if name.endswith(".xml")
-            and not name.endswith("imsmanifest.xml")
-            and not name.endswith("assessment_meta.xml")
+            and name != "imsmanifest.xml"
+            and not name.endswith(
+                "assessment_meta.xml"
+            )
         ]
 
-        metadata_files = [
+        meta_files = [
             name
-            for name in zip_files
-            if name.endswith("assessment_meta.xml")
+            for name in names
+            if name.endswith(
+                "assessment_meta.xml"
+            )
         ]
 
         if len(assessment_files) != 1:
             errors.append(
-                "Expected exactly one assessment XML file; "
-                f"found {len(assessment_files)}"
-            )
-        else:
-            results.append(
-                "✓ One assessment XML file found"
+                "Expected exactly one assessment XML "
+                f"but found {len(assessment_files)}."
             )
 
-        if len(metadata_files) != 1:
+            return results, errors, warnings
+
+        if len(meta_files) != 1:
             errors.append(
-                "Expected exactly one assessment_meta.xml; "
-                f"found {len(metadata_files)}"
-            )
-        else:
-            results.append(
-                "✓ assessment_meta.xml found"
+                "Expected exactly one assessment_meta.xml "
+                f"but found {len(meta_files)}."
             )
 
-        if errors:
-            return results, errors
+            return results, errors, warnings
 
-        assessment_relative = assessment_files[0]
-        metadata_relative = metadata_files[0]
-
-        assessment_path = os.path.join(
-            temp_dir,
-            assessment_relative,
+        assessment_relative = (
+            assessment_files[0]
         )
 
-        metadata_path = os.path.join(
-            temp_dir,
-            metadata_relative,
-        )
+        meta_relative = meta_files[0]
 
-        # -------------------------------------------------
-        # PARSE XML
-        # -------------------------------------------------
-
-        try:
-            manifest_tree = ET.parse(
-                manifest_path
-            )
-            results.append(
-                "✓ Manifest XML is well formed"
-            )
-        except ET.ParseError as error:
-            errors.append(
-                f"Manifest XML error: {error}"
-            )
-            return results, errors
-
-        try:
-            assessment_tree = ET.parse(
-                assessment_path
-            )
-            results.append(
-                "✓ Assessment XML is well formed"
-            )
-        except ET.ParseError as error:
-            errors.append(
-                f"Assessment XML error: {error}"
-            )
-            return results, errors
-
-        try:
-            ET.parse(metadata_path)
-            results.append(
-                "✓ Assessment metadata XML is well formed"
-            )
-        except ET.ParseError as error:
-            errors.append(
-                f"assessment_meta.xml error: {error}"
-            )
-
-        # -------------------------------------------------
-        # MANIFEST REFERENCES
-        # -------------------------------------------------
-
-        manifest_root = manifest_tree.getroot()
-
-        file_elements = manifest_root.findall(
-            ".//ims:file",
-            MANIFEST_NS,
-        )
-
-        manifest_files = {
-            element.attrib.get("href")
-            for element in file_elements
-            if element.attrib.get("href")
-        }
-
-        if assessment_relative in manifest_files:
-            results.append(
-                "✓ Manifest references assessment XML"
-            )
-        else:
-            errors.append(
-                "Manifest does not reference assessment XML"
-            )
-
-        if metadata_relative in manifest_files:
-            results.append(
-                "✓ Manifest references assessment_meta.xml"
-            )
-        else:
-            errors.append(
-                "Manifest does not reference assessment_meta.xml"
-            )
-
-        # -------------------------------------------------
-        # ASSESSMENT STRUCTURE
-        # -------------------------------------------------
-
-        assessment_root = assessment_tree.getroot()
-
-        sections = assessment_root.findall(
-            ".//qti:section",
-            QTI_NS,
-        )
-
-        if not sections:
-            errors.append(
-                "Assessment contains no QTI section"
-            )
-        else:
-            results.append(
-                "✓ Assessment contains a section"
-            )
-
-        items = assessment_root.findall(
-            ".//qti:item",
-            QTI_NS,
+        results.append(
+            "One assessment XML found"
         )
 
         results.append(
-            f"✓ Assessment contains {len(items)} question(s)"
+            "assessment_meta.xml found"
         )
 
-        if (
-            expected_questions is not None
-            and len(items) != expected_questions
-        ):
-            errors.append(
-                f"Expected {expected_questions} questions "
-                f"but found {len(items)}"
+        # =================================================
+        # EXTRACT
+        # =================================================
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+
+            package.extractall(
+                temp_dir
             )
 
-        # -------------------------------------------------
-        # QUESTION TYPES
-        # -------------------------------------------------
-
-        question_types = []
-
-        for item in items:
-
-            metadata_fields = item.findall(
-                ".//qti:qtimetadatafield",
-                QTI_NS,
+            manifest_path = os.path.join(
+                temp_dir,
+                "imsmanifest.xml",
             )
 
-            item_type = None
+            assessment_path = os.path.join(
+                temp_dir,
+                assessment_relative,
+            )
 
-            for field in metadata_fields:
+            meta_path = os.path.join(
+                temp_dir,
+                meta_relative,
+            )
 
-                label = field.find(
-                    "qti:fieldlabel",
-                    QTI_NS,
+            # =============================================
+            # XML PARSING
+            # =============================================
+
+            try:
+                manifest_tree = ET.parse(
+                    manifest_path
                 )
 
-                entry = field.find(
-                    "qti:fieldentry",
-                    QTI_NS,
+                manifest_root = (
+                    manifest_tree.getroot()
+                )
+
+                results.append(
+                    "Manifest XML is well formed"
+                )
+
+            except ET.ParseError as error:
+
+                errors.append(
+                    f"Manifest XML error: {error}"
+                )
+
+                return (
+                    results,
+                    errors,
+                    warnings,
+                )
+
+            try:
+                assessment_tree = ET.parse(
+                    assessment_path
+                )
+
+                assessment_root = (
+                    assessment_tree.getroot()
+                )
+
+                results.append(
+                    "Assessment XML is well formed"
+                )
+
+            except ET.ParseError as error:
+
+                errors.append(
+                    f"Assessment XML error: {error}"
+                )
+
+                return (
+                    results,
+                    errors,
+                    warnings,
+                )
+
+            try:
+                meta_tree = ET.parse(
+                    meta_path
+                )
+
+                meta_root = (
+                    meta_tree.getroot()
+                )
+
+                results.append(
+                    "assessment_meta.xml "
+                    "is well formed"
+                )
+
+            except ET.ParseError as error:
+
+                errors.append(
+                    "assessment_meta.xml error: "
+                    f"{error}"
+                )
+
+                return (
+                    results,
+                    errors,
+                    warnings,
+                )
+
+            # =============================================
+            # MANIFEST NAMESPACE
+            # =============================================
+
+            expected_manifest_tag = (
+                "{"
+                + MANIFEST_NS["cc"]
+                + "}manifest"
+            )
+
+            if (
+                manifest_root.tag
+                != expected_manifest_tag
+            ):
+                errors.append(
+                    "Manifest is not using the "
+                    "IMS Common Cartridge 1.1 namespace."
+                )
+            else:
+                results.append(
+                    "IMS Common Cartridge namespace passed"
+                )
+
+            # =============================================
+            # MANIFEST METADATA
+            # =============================================
+
+            schema = manifest_root.find(
+                ".//cc:schema",
+                MANIFEST_NS,
+            )
+
+            schema_version = (
+                manifest_root.find(
+                    ".//cc:schemaversion",
+                    MANIFEST_NS,
+                )
+            )
+
+            if (
+                schema is None
+                or schema.text != "IMS Content"
+            ):
+                errors.append(
+                    "Manifest schema is not IMS Content."
+                )
+            else:
+                results.append(
+                    "Manifest schema = IMS Content"
+                )
+
+            if (
+                schema_version is None
+                or schema_version.text
+                != "1.1.3"
+            ):
+                errors.append(
+                    "Manifest schemaversion "
+                    "is not 1.1.3."
+                )
+            else:
+                results.append(
+                    "Manifest version = 1.1.3"
+                )
+
+            # =============================================
+            # MANIFEST RESOURCES
+            # =============================================
+
+            resources = manifest_root.findall(
+                ".//cc:resource",
+                MANIFEST_NS,
+            )
+
+            qti_resources = [
+                resource
+                for resource in resources
+                if resource.attrib.get(
+                    "type"
+                )
+                == "imsqti_xmlv1p2"
+            ]
+
+            meta_resources = [
+                resource
+                for resource in resources
+                if resource.attrib.get(
+                    "type"
+                )
+                == (
+                    "associatedcontent/"
+                    "imscc_xmlv1p1/"
+                    "learning-application-resource"
+                )
+            ]
+
+            if len(qti_resources) != 1:
+                errors.append(
+                    "Expected one QTI resource "
+                    f"but found {len(qti_resources)}."
+                )
+            else:
+                results.append(
+                    "One QTI manifest resource found"
+                )
+
+            if len(meta_resources) != 1:
+                errors.append(
+                    "Expected one Canvas metadata resource "
+                    f"but found {len(meta_resources)}."
+                )
+            else:
+                results.append(
+                    "One metadata manifest resource found"
+                )
+
+            if (
+                len(qti_resources) == 1
+                and len(meta_resources) == 1
+            ):
+
+                qti_resource = (
+                    qti_resources[0]
+                )
+
+                meta_resource = (
+                    meta_resources[0]
+                )
+
+                meta_ident = (
+                    meta_resource.attrib.get(
+                        "identifier"
+                    )
+                )
+
+                dependency = (
+                    qti_resource.find(
+                        "cc:dependency",
+                        MANIFEST_NS,
+                    )
                 )
 
                 if (
-                    label is not None
-                    and entry is not None
-                    and label.text == "question_type"
+                    dependency is None
+                    or dependency.attrib.get(
+                        "identifierref"
+                    )
+                    != meta_ident
                 ):
-                    item_type = entry.text
-                    break
+                    errors.append(
+                        "QTI resource dependency does "
+                        "not reference assessment metadata."
+                    )
+                else:
+                    results.append(
+                        "Assessment metadata dependency passed"
+                    )
 
-            question_types.append(item_type)
+            # =============================================
+            # MANIFEST FILE PATHS
+            # =============================================
 
-        allowed_types = {
-            "multiple_choice_question",
-            "multiple_answers_question",
-            "numerical_question",
-        }
+            manifest_files = []
 
-        for index, question_type in enumerate(
-            question_types,
-            start=1,
-        ):
-
-            if question_type not in allowed_types:
-                errors.append(
-                    f"Item {index} has unsupported or missing "
-                    f"question_type: {question_type}"
-                )
-
-        if not any(
-            question_type not in allowed_types
-            for question_type in question_types
-        ):
-            results.append(
-                "✓ All question types are recognized"
-            )
-
-        # -------------------------------------------------
-        # MULTIPLE CHOICE
-        # -------------------------------------------------
-
-        for item in items:
-
-            title = item.attrib.get(
-                "title",
-                "Unknown question",
-            )
-
-            response_lid = item.find(
-                ".//qti:response_lid",
-                QTI_NS,
-            )
-
-            if response_lid is None:
-                continue
-
-            cardinality = response_lid.attrib.get(
-                "rcardinality"
-            )
-
-            item_xml = ET.tostring(
-                item,
-                encoding="unicode",
-            )
-
-            if (
-                "multiple_choice_question"
-                in item_xml
+            for element in manifest_root.findall(
+                ".//cc:file",
+                MANIFEST_NS,
             ):
 
-                if cardinality != "Single":
-                    errors.append(
-                        f"{title}: Multiple Choice must "
-                        "use rcardinality='Single'"
+                href = element.attrib.get(
+                    "href"
+                )
+
+                if href:
+                    manifest_files.append(
+                        href
                     )
 
             if (
-                "multiple_answers_question"
-                in item_xml
+                assessment_relative
+                not in manifest_files
             ):
+                errors.append(
+                    "Manifest does not reference "
+                    "the assessment XML path."
+                )
+            else:
+                results.append(
+                    "Manifest references assessment XML"
+                )
 
-                if cardinality != "Multiple":
+            if (
+                meta_relative
+                not in manifest_files
+            ):
+                errors.append(
+                    "Manifest does not reference "
+                    "assessment_meta.xml."
+                )
+            else:
+                results.append(
+                    "Manifest references assessment metadata"
+                )
+
+            for path in manifest_files:
+
+                if path not in names:
                     errors.append(
-                        f"{title}: Multiple Answer must "
-                        "use rcardinality='Multiple'"
+                        "Manifest references missing file: "
+                        f"{path}"
                     )
 
-        results.append(
-            "✓ Choice-question cardinality checked"
-        )
+            # =============================================
+            # CANVAS META NAMESPACE
+            # =============================================
 
-        # -------------------------------------------------
-        # NUMERIC
-        # -------------------------------------------------
-
-        numeric_items = []
-
-        for item in items:
-
-            item_xml = ET.tostring(
-                item,
-                encoding="unicode",
+            expected_meta_tag = (
+                "{"
+                + CANVAS_NS["canvas"]
+                + "}quiz"
             )
 
-            if "numerical_question" in item_xml:
-                numeric_items.append(item)
+            if (
+                meta_root.tag
+                != expected_meta_tag
+            ):
+                errors.append(
+                    "assessment_meta.xml is not "
+                    "using Canvas cccv1p0 namespace."
+                )
+            else:
+                results.append(
+                    "Canvas assessment metadata "
+                    "namespace passed"
+                )
 
-        for item in numeric_items:
+            # =============================================
+            # META POINTS
+            # =============================================
 
-            title = item.attrib.get(
-                "title",
-                "Numeric question",
+            points_element = meta_root.find(
+                "canvas:points_possible",
+                CANVAS_NS,
             )
 
-            response_str = item.find(
-                ".//qti:response_str",
+            meta_points = numeric_text(
+                points_element
+            )
+
+            if meta_points is None:
+                errors.append(
+                    "Canvas metadata is missing "
+                    "points_possible."
+                )
+            else:
+                results.append(
+                    "Canvas points_possible found: "
+                    f"{meta_points:g}"
+                )
+
+            # =============================================
+            # ASSESSMENT STRUCTURE
+            # =============================================
+
+            assessment = assessment_root.find(
+                "qti:assessment",
                 QTI_NS,
             )
 
-            if response_str is None:
+            if assessment is None:
                 errors.append(
-                    f"{title}: Numeric item has no response_str"
-                )
-                continue
-
-            render_fib = response_str.find(
-                "qti:render_fib",
-                QTI_NS,
-            )
-
-            if render_fib is None:
-                errors.append(
-                    f"{title}: Numeric item has no render_fib"
-                )
-                continue
-
-            response_label = render_fib.find(
-                "qti:response_label",
-                QTI_NS,
-            )
-
-            if response_label is None:
-                errors.append(
-                    f"{title}: Numeric item has no "
-                    "response_label inside render_fib"
+                    "Assessment element is missing."
                 )
 
-        if numeric_items:
+                return (
+                    results,
+                    errors,
+                    warnings,
+                )
+
             results.append(
-                f"✓ Checked {len(numeric_items)} numeric item(s)"
+                "QTI assessment element found"
             )
 
-    return results, errors
+            section = assessment.find(
+                "qti:section",
+                QTI_NS,
+            )
+
+            if section is None:
+                errors.append(
+                    "root_section is missing."
+                )
+
+                return (
+                    results,
+                    errors,
+                    warnings,
+                )
+
+            results.append(
+                "QTI section found"
+            )
+
+            items = section.findall(
+                "qti:item",
+                QTI_NS,
+            )
+
+            results.append(
+                f"Assessment contains "
+                f"{len(items)} question(s)"
+            )
+
+            if (
+                expected_questions is not None
+                and len(items)
+                != expected_questions
+            ):
+                errors.append(
+                    f"Expected {expected_questions} "
+                    f"questions but found "
+                    f"{len(items)}."
+                )
+
+            # =============================================
+            # QUESTION VALIDATION
+            # =============================================
+
+            total_points = 0.0
+
+            numeric_count = 0
+
+            allowed_types = {
+                "multiple_choice_question",
+                "multiple_answers_question",
+                "numerical_question",
+            }
+
+            for item_index, item in enumerate(
+                items,
+                start=1,
+            ):
+
+                title = item.attrib.get(
+                    "title"
+                ) or f"Item {item_index}"
+
+                question_type = metadata_value(
+                    item,
+                    "question_type",
+                )
+
+                if (
+                    question_type
+                    not in allowed_types
+                ):
+                    errors.append(
+                        f"{title}: unsupported "
+                        f"question_type "
+                        f"{question_type!r}."
+                    )
+
+                    continue
+
+                # -----------------------------------------
+                # REQUIRED CANVAS METADATA
+                # -----------------------------------------
+
+                required_metadata = [
+                    "question_type",
+                    "points_possible",
+                    "original_answer_ids",
+                    "assessment_question_identifierref",
+                    "calculator_type",
+                ]
+
+                for field_name in required_metadata:
+
+                    value = metadata_value(
+                        item,
+                        field_name,
+                    )
+
+                    if (
+                        value is None
+                        and field_name
+                        != "original_answer_ids"
+                    ):
+                        errors.append(
+                            f"{title}: missing "
+                            f"{field_name}."
+                        )
+
+                points_value = metadata_value(
+                    item,
+                    "points_possible",
+                )
+
+                try:
+                    total_points += float(
+                        points_value or 0
+                    )
+                except ValueError:
+                    errors.append(
+                        f"{title}: invalid "
+                        "points_possible."
+                    )
+
+                # -----------------------------------------
+                # MULTIPLE CHOICE
+                # -----------------------------------------
+
+                if (
+                    question_type
+                    == "multiple_choice_question"
+                ):
+
+                    response = item.find(
+                        ".//qti:response_lid",
+                        QTI_NS,
+                    )
+
+                    if response is None:
+                        errors.append(
+                            f"{title}: missing "
+                            "response_lid."
+                        )
+
+                    elif (
+                        response.attrib.get(
+                            "rcardinality"
+                        )
+                        != "Single"
+                    ):
+                        errors.append(
+                            f"{title}: Multiple Choice "
+                            "must use Single cardinality."
+                        )
+
+                # -----------------------------------------
+                # MULTIPLE ANSWER
+                # -----------------------------------------
+
+                elif (
+                    question_type
+                    == "multiple_answers_question"
+                ):
+
+                    response = item.find(
+                        ".//qti:response_lid",
+                        QTI_NS,
+                    )
+
+                    if response is None:
+                        errors.append(
+                            f"{title}: missing "
+                            "response_lid."
+                        )
+
+                    elif (
+                        response.attrib.get(
+                            "rcardinality"
+                        )
+                        != "Multiple"
+                    ):
+                        errors.append(
+                            f"{title}: Multiple Answer "
+                            "must use Multiple cardinality."
+                        )
+
+                # -----------------------------------------
+                # NUMERIC
+                # -----------------------------------------
+
+                elif (
+                    question_type
+                    == "numerical_question"
+                ):
+
+                    numeric_count += 1
+
+                    response = item.find(
+                        ".//qti:response_str",
+                        QTI_NS,
+                    )
+
+                    if response is None:
+                        errors.append(
+                            f"{title}: missing "
+                            "response_str."
+                        )
+
+                        continue
+
+                    if (
+                        response.attrib.get(
+                            "rcardinality"
+                        )
+                        != "Single"
+                    ):
+                        errors.append(
+                            f"{title}: numeric response "
+                            "must use Single cardinality."
+                        )
+
+                    render_fib = response.find(
+                        "qti:render_fib",
+                        QTI_NS,
+                    )
+
+                    if render_fib is None:
+                        errors.append(
+                            f"{title}: missing "
+                            "render_fib."
+                        )
+
+                        continue
+
+                    if (
+                        render_fib.attrib.get(
+                            "fibtype"
+                        )
+                        != "Decimal"
+                    ):
+                        errors.append(
+                            f"{title}: numeric render_fib "
+                            "must use Decimal."
+                        )
+
+                    response_label = (
+                        render_fib.find(
+                            "qti:response_label",
+                            QTI_NS,
+                        )
+                    )
+
+                    if response_label is None:
+                        errors.append(
+                            f"{title}: numeric response "
+                            "label is missing."
+                        )
+
+                    # Canvas-style margin.
+                    varequal = item.find(
+                        ".//qti:varequal"
+                        "[@margintype='absolute']",
+                        QTI_NS,
+                    )
+
+                    if varequal is None:
+                        errors.append(
+                            f"{title}: Canvas absolute "
+                            "numeric margin is missing."
+                        )
+
+                    else:
+
+                        margin = (
+                            varequal.attrib.get(
+                                "margin"
+                            )
+                        )
+
+                        if margin is None:
+                            errors.append(
+                                f"{title}: numeric margin "
+                                "value is missing."
+                            )
+
+                    low = item.find(
+                        ".//qti:vargte",
+                        QTI_NS,
+                    )
+
+                    high = item.find(
+                        ".//qti:varlte",
+                        QTI_NS,
+                    )
+
+                    if (
+                        low is None
+                        or high is None
+                    ):
+                        errors.append(
+                            f"{title}: numeric low/high "
+                            "range is incomplete."
+                        )
+
+            # =============================================
+            # POINT TOTAL
+            # =============================================
+
+            if (
+                meta_points is not None
+                and abs(
+                    total_points
+                    - meta_points
+                )
+                > 0.0001
+            ):
+                errors.append(
+                    "Question points total "
+                    f"({total_points:g}) does not match "
+                    "assessment_meta.xml "
+                    f"({meta_points:g})."
+                )
+            else:
+                results.append(
+                    "Question points match "
+                    "assessment metadata"
+                )
+
+            results.append(
+                f"Checked {numeric_count} "
+                "numeric question(s)"
+            )
+
+    return results, errors, warnings
