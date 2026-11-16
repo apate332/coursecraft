@@ -2,7 +2,12 @@ import hashlib
 import html
 import uuid
 
-
+from qti.math_renderer import (
+    render_prompt,
+    render_choice,
+    render_feedback,
+    validate_question_math,
+)
 # =========================================================
 # CANVAS / QTI CONSTANTS
 # =========================================================
@@ -313,8 +318,6 @@ def choice_question_xml(
         choices
     ):
 
-        # Match the reference project's approach:
-        # numeric answer identifiers rather than A/B/C/D.
         answer_id = str(
             answer_base + index + 1
         )
@@ -323,10 +326,16 @@ def choice_question_xml(
             answer_id
         )
 
+        # Math-aware Canvas HTML.
+        choice_html = render_choice(
+            choice,
+            question,
+        )
+
         response_labels.append(
             f"""<response_label ident="{answer_id}">
   <material>
-    <mattext texttype="text/plain">{xml_escape(choice.get("text", ""))}</mattext>
+    <mattext texttype="text/html"><![CDATA[{choice_html}]]></mattext>
   </material>
 </response_label>"""
         )
@@ -483,6 +492,22 @@ def generate_item_xml(
     quiz_ident,
     item_index,
 ):
+
+     # -----------------------------------------------------
+    # MATH VALIDATION
+    # -----------------------------------------------------
+
+    math_problems = validate_question_math(
+        question
+    )
+
+    if math_problems:
+        raise ValueError(
+            f"Question {question.get('number')} "
+            "contains invalid mathematical content: "
+            + "; ".join(math_problems)
+        )
+    
     question_type = question.get(
         "type"
     )
@@ -588,8 +613,12 @@ def generate_item_xml(
     # QUESTION TEXT
     # -----------------------------------------------------
 
+    question_html = render_prompt(
+        question
+    )
+
     question_material = f"""<material>
-  <mattext texttype="text/html">{xml_escape(question.get("prompt", ""))}</mattext>
+  <mattext texttype="text/html"><![CDATA[{question_html}]]></mattext>
 </material>"""
 
     presentation = (
