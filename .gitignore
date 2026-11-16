@@ -40,4 +40,4 @@ test_coursecraft_new_qti.py
 test_new_quiz.py
 test_new_quiz_qti.py
 test_pipeline.py
-test_qti_validator.py
+test_qti_validator.pyapp_before_pastel_redesign.py
